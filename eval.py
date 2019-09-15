@@ -2,18 +2,44 @@
 # coding: utf-8
 
 import warnings
+import torch
 from torch import nn
-warnings.filterwarnings(action='once')
+warnings.filterwarnings(action='ignore')
 
 from autocorrect import Correcter
-from chatbot import encoder, decoder, MAX_LENGTH
+from chatbot import trainBot
 
 USE_CUDA = torch.cuda.is_available()
 device = torch.device("cuda" if USE_CUDA else "cpu")
 correct = Correcter()
 
 
-def evaluate(encoder, decoder, searcher, voc, sentence, max_length=MAX_LENGTH):
+# Hyperparameters
+attn_model = 'dot'
+load_checkpoint = 500
+max_length = 10
+min_count = 3
+model_name = "lionheart"
+dropout = 0.1
+batch_size = 4
+clip = 50
+teacher_forcing_ratio = 1
+learning_rate = 0.0001
+decoder_learning_ratio = 5
+n_iteration = 500
+print_every = 100
+save_every = 500
+
+
+encoder, decoder, voc = trainBot(attn_model, load_checkpoint, max_length, min_count, model_name, dropout, 
+                                    batch_size, clip, teacher_forcing_ratio, 
+                                    learning_rate, decoder_learning_ratio, n_iteration, print_every, save_every)
+
+
+# In[ ]:
+
+
+def evaluate(encoder, decoder, searcher, voc, sentence, max_length):
     # words -> indexes
     indexes_batch = [indexesFromSentence(voc, sentence)]
     
@@ -79,6 +105,9 @@ def evaluateInput(encoder, decoder, searcher, voc):
             print(f"Bot: {key}?")
 
 
+# In[ ]:
+
+
 class GreedySearchDecoder(nn.Module):
     def __init__(self, encoder, decoder):
         super(GreedySearchDecoder, self).__init__()
@@ -114,6 +143,9 @@ class GreedySearchDecoder(nn.Module):
         return all_tokens, all_scores
 
 
+# In[ ]:
+
+
 # Set dropout layers to eval mode
 encoder.eval()
 decoder.eval()
@@ -125,11 +157,10 @@ searcher = GreedySearchDecoder(encoder, decoder)
 evaluateInput(encoder, decoder, searcher, voc)
 
 
-import re
+# In[ ]:
 
-S = "# In\[[0-9]\]:\n\n"
-S = re.sub("# In[.]:\n\n", " ", S)
-S
+
+
 
 
 # In[ ]:

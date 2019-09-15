@@ -11,18 +11,26 @@ from torch.jit import script, trace
 import torch.nn as nn
 from torch import optim
 import torch.nn.functional as F
-import csv
 import random
 import re
 import os
 import unicodedata
-import codecs
 from io import open
 import itertools
 from gensim.models import KeyedVectors
 
+from parse import parse_file
+
 USE_CUDA = torch.cuda.is_available()
 device = torch.device("cuda" if USE_CUDA else "cpu")
+
+corpus_name = "cornell movie-dialogs corpus"
+corpus = os.path.join("data", corpus_name)
+save_dir = os.path.join("data", "save")
+datafile = os.path.join(corpus, "formatted_movie_lines.txt")
+
+if not datafile:
+    parse_file(datafile, corpus)
 
 
 # Default word tokens
@@ -30,90 +38,10 @@ PAD_token = 0  # Used for padding short sentences
 SOS_token = 1  # Start-of-sentence token
 EOS_token = 2  # End-of-sentence token
 
-MAX_LENGTH = 10  # Maximum sentence length to consider
-corpus_name = "cornell movie-dialogs corpus"
-corpus = os.path.join("data", corpus_name)
-MIN_COUNT = 3    # Minimum word count threshold for trimming
-
-
-# Splits each line of the file into a dictionary of fields
-def loadLines(fileName, fields):
-    lines = {}
-    with open(fileName, 'r', encoding='iso-8859-1') as f:
-        for line in f:
-            values = line.split(" +++$+++ ")
-            # Extract fields
-            lineObj = {}
-            for i, field in enumerate(fields):
-                lineObj[field] = values[i]
-            lines[lineObj['lineID']] = lineObj
-        f.close()
-    return lines
-
-
-# Groups fields of lines from `loadLines` into conversations based on *movie_conversations.txt*
-def loadConversations(fileName, lines, fields):
-    conversations = []
-    with open(fileName, 'r', encoding='iso-8859-1') as f:
-        for line in f:
-            values = line.split(" +++$+++ ")
-            # Extract fields
-            convObj = {}
-            for i, field in enumerate(fields):
-                convObj[field] = values[i]
-            # Convert string to list (convObj["utteranceIDs"] == "['L598485', 'L598486', ...]")
-            utterance_id_pattern = re.compile('L[0-9]+')
-            lineIds = utterance_id_pattern.findall(convObj["utteranceIDs"])
-            # Reassemble lines
-            convObj["lines"] = []
-            for lineId in lineIds:
-                convObj["lines"].append(lines[lineId])
-            conversations.append(convObj)
-        f.close()
-    return conversations
-
-
-# Extracts pairs of sentences from conversations
-def extractSentencePairs(conversations):
-    qa_pairs = []
-    for conversation in conversations:
-        # Iterate over all the lines of the conversation
-        for i in range(len(conversation["lines"]) - 1):  # We ignore the last line (no answer for it)
-            inputLine = conversation["lines"][i]["text"].strip()
-            targetLine = conversation["lines"][i+1]["text"].strip()
-            # Filter wrong samples (if one of the lists is empty)
-            if inputLine and targetLine:
-                qa_pairs.append([inputLine, targetLine])
-    return qa_pairs
-
-
-# Define path to new file
-datafile = os.path.join(corpus, "formatted_movie_lines.txt")
-
-delimiter = '\t'
-# Unescape the delimiter
-delimiter = str(codecs.decode(delimiter, "unicode_escape"))
-
-# Initialize lines dict, conversations list, and field ids
-lines = {}
-conversations = []
-MOVIE_LINES_FIELDS = ["lineID", "characterID", "movieID", "character", "text"]
-MOVIE_CONVERSATIONS_FIELDS = ["character1ID", "character2ID", "movieID", "utteranceIDs"]
-
-# Load lines and process conversations
-print("Processing corpus...")
-lines = loadLines(os.path.join(corpus, "movie_lines.txt"), MOVIE_LINES_FIELDS)
-print("Loading conversations...")
-conversations = loadConversations(os.path.join(corpus, "movie_conversations.txt"),
-                                  lines, MOVIE_CONVERSATIONS_FIELDS)
-
-# Write new csv file
-print("Writing newly formatted file...")
-with open(datafile, 'w', encoding='utf-8') as outputfile:
-    writer = csv.writer(outputfile, delimiter=delimiter, lineterminator='\n')
-    for pair in extractSentencePairs(conversations):
-        writer.writerow(pair)
-print("Newly formatted file ready!")
+# Relatively fixed parameters
+hidden_size = 300
+encoder_n_layers = 2
+decoder_n_layers = 2
 
 
 class Voc:
@@ -191,20 +119,20 @@ def readVocs(datafile, corpus_name):
     return voc, pairs
 
 # Returns True iff both sentences in a pair 'p' are under the MAX_LENGTH threshold
-def filterPair(p):
+def filterPair(p, max_length):
     # Input sequences need to preserve the last word for EOS token
-    return len(p[0].split(' ')) < MAX_LENGTH and len(p[1].split(' ')) < MAX_LENGTH
+    return len(p[0].split(' ')) < max_length and len(p[1].split(' ')) < max_length
 
 # Filter pairs using filterPair condition
-def filterPairs(pairs):
-    return [pair for pair in pairs if filterPair(pair)]
+def filterPairs(pairs, max_length):
+    return [pair for pair in pairs if filterPair(pair, max_length)]
 
 # Using the functions defined above, return a populated voc object and pairs list
-def loadPrepareData(corpus, corpus_name, datafile, save_dir):
+def loadPrepareData(corpus, corpus_name, datafile, save_dir, max_length):
     print("Start preparing training data ...")
     voc, pairs = readVocs(datafile, corpus_name)
     print("Read {!s} sentence pairs".format(len(pairs)))
-    pairs = filterPairs(pairs)
+    pairs = filterPairs(pairs, max_length)
     print("Trimmed to {!s} sentence pairs".format(len(pairs)))
     print("Counting words...")
     for pair in pairs:
@@ -212,11 +140,6 @@ def loadPrepareData(corpus, corpus_name, datafile, save_dir):
         voc.addSentence(pair[1])
     print("Counted words:", voc.num_words)
     return voc, pairs
-
-
-# Load/Assemble voc and pairs
-save_dir = os.path.join("data", "save")
-voc, pairs = loadPrepareData(corpus, corpus_name, datafile, save_dir)
 
 
 def trimRareWords(voc, pairs, MIN_COUNT):
@@ -246,8 +169,6 @@ def trimRareWords(voc, pairs, MIN_COUNT):
 
     print("Trimmed from {} pairs to {}, {:.4f} of total".format(len(pairs), len(keep_pairs), len(keep_pairs) / len(pairs)))
     return keep_pairs
-
-pairs = trimRareWords(voc, pairs, MIN_COUNT)
 
 
 def indexesFromSentence(voc, sentence):
@@ -417,7 +338,7 @@ def maskNLLLoss(inp, target, mask):
 
 
 def train(input_variable, lengths, target_variable, mask, max_target_len, encoder, decoder, embedding,
-          encoder_optimizer, decoder_optimizer, batch_size, clip, max_length=MAX_LENGTH):
+          encoder_optimizer, decoder_optimizer, batch_size, clip, max_length, teacher_forcing_ratio):
 
     # Zero gradients
     encoder_optimizer.zero_grad()
@@ -489,7 +410,9 @@ def train(input_variable, lengths, target_variable, mask, max_target_len, encode
     return sum(print_losses) / n_totals
 
 
-def trainIters(model_name, voc, pairs, encoder, decoder, encoder_optimizer, decoder_optimizer, embedding, encoder_n_layers, decoder_n_layers, save_dir, n_iteration, batch_size, print_every, save_every, clip, corpus_name, loadFilename):
+def trainIters(model_name, voc, pairs, encoder, decoder, encoder_optimizer, decoder_optimizer, 
+               embedding, encoder_n_layers, decoder_n_layers, save_dir, n_iteration, batch_size, 
+               print_every, save_every, clip, corpus_name, loadFilename, max_length, teacher_forcing_ratio, checkpoint):
 
     # Load batches for each iteration
     training_batches = [batch2TrainData(voc, [random.choice(pairs) for _ in range(batch_size)])
@@ -511,7 +434,7 @@ def trainIters(model_name, voc, pairs, encoder, decoder, encoder_optimizer, deco
 
         # Run a training iteration with batch
         loss = train(input_variable, lengths, target_variable, mask, max_target_len, encoder,
-                     decoder, embedding, encoder_optimizer, decoder_optimizer, batch_size, clip)
+                     decoder, embedding, encoder_optimizer, decoder_optimizer, batch_size, clip, max_length, teacher_forcing_ratio)
         print_loss += loss
 
         # Print progress
@@ -522,7 +445,7 @@ def trainIters(model_name, voc, pairs, encoder, decoder, encoder_optimizer, deco
 
         # Save checkpoint
         if (iteration % save_every == 0):
-            directory = os.path.join(save_dir, model_name, corpus_name, '{}-{}_{}_test'.format(encoder_n_layers, decoder_n_layers, hidden_size))
+            directory = os.path.join(save_dir, model_name, corpus_name, '{}-{}_{}'.format(encoder_n_layers, decoder_n_layers, hidden_size))
             if not os.path.exists(directory):
                 os.makedirs(directory)
             torch.save({
@@ -537,95 +460,91 @@ def trainIters(model_name, voc, pairs, encoder, decoder, encoder_optimizer, deco
             }, os.path.join(directory, '{}_{}.tar'.format(iteration+start_iteration, 'checkpoint')))
 
 
-# Configure models
-model_name = 'cb_model'
-attn_model = 'dot'
-#attn_model = 'general'
-#attn_model = 'concat'
-hidden_size = 500
-encoder_n_layers = 2
-decoder_n_layers = 2
-dropout = 0.1
-batch_size = 64
-
-# Configure training/optimization
-clip = 50.0
-teacher_forcing_ratio = 1
-learning_rate = 0.0001
-decoder_learning_ratio = 5
-n_iteration = 1000
-print_every = 100
-save_every = 500
-
-# Set checkpoint to load from; set to None if starting from scratch
-checkpoint_iter = 1000
-# loadFilename = None
-loadFilename = os.path.join(save_dir, model_name, corpus_name,
-                           '{}-{}_{}_test'.format(encoder_n_layers, decoder_n_layers, hidden_size),
-                           '{}_checkpoint.tar'.format(checkpoint_iter))
-
-# Load model if a loadFilename is provided
-if loadFilename:
-    # If loading on same machine the model was trained on
-    checkpoint = torch.load(loadFilename)
-    # If loading a model trained on GPU to CPU
-    #checkpoint = torch.load(loadFilename, map_location=torch.device('cpu'))
-    encoder_sd = checkpoint['en']
-    decoder_sd = checkpoint['de']
-    encoder_optimizer_sd = checkpoint['en_opt']
-    decoder_optimizer_sd = checkpoint['de_opt']
-    embedding_sd = checkpoint['embedding']
-    voc.__dict__ = checkpoint['voc_dict']
-
-
-print('Building encoder and decoder ...')
-# Initialize word embeddings
-embedding_model = KeyedVectors.load_word2vec_format('data\GoogleNews-vectors-negative300.bin.gz', binary=True)
-embedding_weights = torch.FloatTensor(embedding_model.vectors)
-embedding = nn.Embedding.from_pretrained(embedding_weights)
-# if loadFilename:
-#     embedding.load_state_dict(embedding_sd)
+def trainBot(attn_model, load_checkpoint, max_length, min_count, model_name, dropout, batch_size, clip, 
+             teacher_forcing_ratio, learning_rate, decoder_learning_ratio, n_iteration, print_every, save_every):
     
-# Initialize encoder & decoder models
-encoder = EncoderRNN(hidden_size, embedding, encoder_n_layers, dropout)
-decoder = LuongAttnDecoderRNN(attn_model, embedding, hidden_size, voc.num_words, decoder_n_layers, dropout)
-if loadFilename:
-    encoder.load_state_dict(encoder_sd)
-    decoder.load_state_dict(decoder_sd)
+    # Clear GPU cache
+    torch.cuda.empty_cache()
     
-# Use appropriate device
-encoder = encoder.to(device)
-decoder = decoder.to(device)
-print('Models built and ready to go!')
+    # Load/Assemble voc and pairs
+    voc, pairs = loadPrepareData(corpus, corpus_name, datafile, save_dir, max_length)
+    pairs = trimRareWords(voc, pairs, min_count)
+    
+    if load_checkpoint:
+        loadFilename = os.path.join(save_dir, model_name, corpus_name,
+                                    '{}-{}_{}'.format(encoder_n_layers, decoder_n_layers, hidden_size),
+                                    '{}_checkpoint.tar'.format(load_checkpoint))
+    else:
+        loadFilename = None
+        checkpoint = None
+    
+    # Load model if a loadFilename is provided
+    if loadFilename:
+        # If loading on same machine the model was trained on
+        checkpoint = torch.load(loadFilename)
+        encoder_sd = checkpoint['en']
+        decoder_sd = checkpoint['de']
+        encoder_optimizer_sd = checkpoint['en_opt']
+        decoder_optimizer_sd = checkpoint['de_opt']
+        embedding_sd = checkpoint['embedding']
+        voc.__dict__ = checkpoint['voc_dict']
 
+    print('Building encoder and decoder ...')
+    # Initialize word embeddings
+    if loadFilename:
+        embedding = nn.Embedding(500000, 300) # Google word2vec has 3 million embeddings, each has a 300 dim vector
+        embedding.load_state_dict(embedding_sd)
+    else:
+        embedding_model = KeyedVectors.load_word2vec_format('data\GoogleNews-vectors-negative300.bin.gz', binary=True, limit=500000)
+        embedding_weights = torch.FloatTensor(embedding_model.vectors)
+        embedding = nn.Embedding.from_pretrained(embedding_weights)
+    
+    # Initialize encoder & decoder models
+    encoder = EncoderRNN(hidden_size, embedding, encoder_n_layers, dropout)
+    decoder = LuongAttnDecoderRNN(attn_model, embedding, hidden_size, voc.num_words, decoder_n_layers, dropout)
+    if loadFilename:
+        encoder.load_state_dict(encoder_sd)
+        decoder.load_state_dict(decoder_sd)
+    
+    # Use appropriate device
+    encoder = encoder.to(device)
+    decoder = decoder.to(device)
+    print('Models built and ready to go!')
+    
+    # Ensure dropout layers are in train mode
+    encoder.train()
+    decoder.train()
 
-# Ensure dropout layers are in train mode
-encoder.train()
-decoder.train()
+    # Initialize optimizers
+    print('Building optimizers ...')
+    encoder_optimizer = optim.Adam(encoder.parameters(), lr=learning_rate)
+    decoder_optimizer = optim.Adam(decoder.parameters(), lr=learning_rate * decoder_learning_ratio)
+    if loadFilename:
+        encoder_optimizer.load_state_dict(encoder_optimizer_sd)
+        decoder_optimizer.load_state_dict(decoder_optimizer_sd)
 
-# Initialize optimizers
-print('Building optimizers ...')
-encoder_optimizer = optim.Adam(encoder.parameters(), lr=learning_rate)
-decoder_optimizer = optim.Adam(decoder.parameters(), lr=learning_rate * decoder_learning_ratio)
-if loadFilename:
-    encoder_optimizer.load_state_dict(encoder_optimizer_sd)
-    decoder_optimizer.load_state_dict(decoder_optimizer_sd)
+    # If you have cuda, configure cuda to call
+    for state in encoder_optimizer.state.values():
+        for k, v in state.items():
+            if isinstance(v, torch.Tensor):
+                state[k] = v.cuda()
 
-# If you have cuda, configure cuda to call
-for state in encoder_optimizer.state.values():
-    for k, v in state.items():
-        if isinstance(v, torch.Tensor):
-            state[k] = v.cuda()
+    for state in decoder_optimizer.state.values():
+        for k, v in state.items():
+            if isinstance(v, torch.Tensor):
+                state[k] = v.cuda()
 
-for state in decoder_optimizer.state.values():
-    for k, v in state.items():
-        if isinstance(v, torch.Tensor):
-            state[k] = v.cuda()
-
-# Run training iterations
-print("Starting Training!")
-trainIters(model_name, voc, pairs, encoder, decoder, encoder_optimizer, decoder_optimizer,
+    # Run training iterations
+    print("Starting Training!")
+    trainIters(model_name, voc, pairs, encoder, decoder, encoder_optimizer, decoder_optimizer,
            embedding, encoder_n_layers, decoder_n_layers, save_dir, n_iteration, batch_size,
-           print_every, save_every, clip, corpus_name, loadFilename)
-print("Training Ended!")
+           print_every, save_every, clip, corpus_name, loadFilename, max_length, teacher_forcing_ratio, checkpoint)
+    print("Training Ended!")
+    return encoder, decoder, voc
+
+
+# In[ ]:
+
+
+
 
