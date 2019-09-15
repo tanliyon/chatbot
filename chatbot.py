@@ -65,6 +65,14 @@ class Voc:
             self.num_words += 1
         else:
             self.word2count[word] += 1
+    
+    def updateDict(self, dict_old):
+        for word in self.word2index:
+            if word not in dict_old["word2index"]:
+                word2index[word] = self.num_words
+            self.word2count[word] = 1
+            self.index2word[self.num_words] = word
+            self.num_words += 1
 
     # Remove words below a certain count threshold
     def trim(self, min_count):
@@ -469,7 +477,7 @@ def trainBot(attn_model, load_checkpoint, max_length, min_count, model_name, dro
     # Load/Assemble voc and pairs
     voc, pairs = loadPrepareData(corpus, corpus_name, datafile, save_dir, max_length)
     pairs = trimRareWords(voc, pairs, min_count)
-    
+
     if load_checkpoint:
         loadFilename = os.path.join(save_dir, model_name, corpus_name,
                                     '{}-{}_{}'.format(encoder_n_layers, decoder_n_layers, hidden_size),
@@ -487,18 +495,20 @@ def trainBot(attn_model, load_checkpoint, max_length, min_count, model_name, dro
         encoder_optimizer_sd = checkpoint['en_opt']
         decoder_optimizer_sd = checkpoint['de_opt']
         embedding_sd = checkpoint['embedding']
-        voc.__dict__ = checkpoint['voc_dict']
+        voc__dict__ = checkpoint['voc_dict']
+#         voc.updateDict(dict_old)
 
     print('Building encoder and decoder ...')
     # Initialize word embeddings
     if loadFilename:
-        embedding = nn.Embedding(500000, 300) # Google word2vec has 3 million embeddings, each has a 300 dim vector
+        embedding = nn.Embedding(100000, 300) # Google word2vec has 3 million embeddings, each has a 300 dim vector
         embedding.load_state_dict(embedding_sd)
     else:
-        embedding_model = KeyedVectors.load_word2vec_format('data\GoogleNews-vectors-negative300.bin.gz', binary=True, limit=500000)
+        embedding_model = KeyedVectors.load_word2vec_format('data\GoogleNews-vectors-negative300.bin.gz', binary=True, limit=100000)
         embedding_weights = torch.FloatTensor(embedding_model.vectors)
         embedding = nn.Embedding.from_pretrained(embedding_weights)
     
+    print(embedding("the"))
     # Initialize encoder & decoder models
     encoder = EncoderRNN(hidden_size, embedding, encoder_n_layers, dropout)
     decoder = LuongAttnDecoderRNN(attn_model, embedding, hidden_size, voc.num_words, decoder_n_layers, dropout)
@@ -543,8 +553,19 @@ def trainBot(attn_model, load_checkpoint, max_length, min_count, model_name, dro
     return encoder, decoder, voc
 
 
-# In[ ]:
+embedding_model = KeyedVectors.load_word2vec_format('data\GoogleNews-vectors-negative300.bin.gz', binary=True, limit=100000)
+
+embedding_weights = torch.FloatTensor(embedding_model.vectors)
+embedding = nn.Embedding.from_pretrained(embedding_weights)
 
 
+# input_tensor = torch.LongTensor([[1,2],[1,4]])
+# tensor = embedding(input_tensor)
+# print(tensor)
+# print(word)
+# print(tensor.shape)
 
+embedding_model["dog"]
+
+# embedding_model.similar_by_vector(tensor, topn=10)
 

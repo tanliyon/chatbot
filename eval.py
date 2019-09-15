@@ -7,28 +7,33 @@ from torch import nn
 warnings.filterwarnings(action='ignore')
 
 from autocorrect import Correcter
-from chatbot import trainBot
+from chatbot import trainBot, normalizeString, indexesFromSentence
 
 USE_CUDA = torch.cuda.is_available()
 device = torch.device("cuda" if USE_CUDA else "cpu")
 correct = Correcter()
 
+# Default word tokens
+PAD_token = 0  # Used for padding short sentences
+SOS_token = 1  # Start-of-sentence token
+EOS_token = 2  # End-of-sentence token
+
 
 # Hyperparameters
 attn_model = 'dot'
-load_checkpoint = 500
-max_length = 10
+load_checkpoint = 6000
+max_length = 20
 min_count = 3
 model_name = "lionheart"
 dropout = 0.1
-batch_size = 4
+batch_size = 64
 clip = 50
-teacher_forcing_ratio = 1
+teacher_forcing_ratio = 0.5
 learning_rate = 0.0001
 decoder_learning_ratio = 5
-n_iteration = 500
+n_iteration = 2000
 print_every = 100
-save_every = 500
+save_every = 2000
 
 
 encoder, decoder, voc = trainBot(attn_model, load_checkpoint, max_length, min_count, model_name, dropout, 
@@ -83,7 +88,7 @@ def evaluateInput(encoder, decoder, searcher, voc):
             # Normalize sentence
             input_sentence = normalizeString(input_sentence)
             # Evaluate sentence
-            output_words = evaluate(encoder, decoder, searcher, voc, input_sentence)
+            output_words = evaluate(encoder, decoder, searcher, voc, input_sentence, max_length)
             
             # Format and print response sentence
             for word in output_words:
